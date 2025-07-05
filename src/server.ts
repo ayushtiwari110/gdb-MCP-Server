@@ -327,7 +327,6 @@ class MCPServer {
         <p>C++ Code Execution MCP Server is running successfully!</p>
         <h2>Authentication:</h2>
         <p>This server requires authentication via <code>x-api-key</code> header.</p>
-        <p>API Key: <code>${this.validApiKey}</code></p>
         <h2>Available Endpoints:</h2>
         <ul>
           <li><strong>GET /</strong> - This page</li>
