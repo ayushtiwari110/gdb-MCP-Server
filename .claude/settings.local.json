@@ -1,5 +1,10 @@
 {
   "enabledMcpjsonServers": [
     "onlinegdb-cpp-executor"
-  ]
+  ],
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.anthropic.com)"
+    ]
+  }
 }

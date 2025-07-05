@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import puppeteer from 'puppeteer';
 import { z } from 'zod';
+import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
 
 // Schema for code execution parameters
 const ExecuteCodeSchema = z.object({
@@ -190,11 +192,19 @@ class MCPServer {
   private app: express.Application;
   private executor: OnlineGDBExecutor;
   private port: number;
+  private validApiKey: string;
+  private allowedOrigins: string[];
 
   constructor(port: number = 3000) {
     this.app = express();
     this.port = port;
     this.executor = new OnlineGDBExecutor();
+    this.validApiKey = process.env.MCP_API_KEY || this.generateDefaultApiKey();
+    this.allowedOrigins = [
+      'https://claude.ai',
+      'https://chat.claude.ai',
+      'https://console.claude.ai'
+    ];
     
     this.setupMiddleware();
     this.setupRoutes();
@@ -204,20 +214,98 @@ class MCPServer {
     process.on('SIGTERM', () => this.cleanup());
   }
 
+  private generateDefaultApiKey(): string {
+    // Generate a secure API key if none is provided
+    const key = crypto.randomBytes(32).toString('hex');
+    console.log('🔑 Generated API Key:', key);
+    console.log('⚠️  Set MCP_API_KEY environment variable to use a custom key');
+    return key;
+  }
+
+  private authenticateRequest(req: express.Request, res: express.Response, next: express.NextFunction): void {
+    // Skip authentication for health check and root endpoints
+    if (req.path === '/health' || req.path === '/') {
+      return next();
+    }
+
+    // Validate Origin header to prevent DNS rebinding attacks
+    const origin = req.headers.origin;
+    if (origin && !this.allowedOrigins.includes(origin) && !origin.match(/^https:\/\/[a-zA-Z0-9-]+\.claude\.ai$/)) {
+      res.status(403).json({
+        jsonrpc: '2.0',
+        error: { code: -32600, message: 'Invalid origin' },
+        id: null
+      });
+      return;
+    }
+
+    // Check for API key in x-api-key header
+    const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+    if (!apiKey || apiKey !== this.validApiKey) {
+      res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32600, message: 'Authentication required' },
+        id: null
+      });
+      return;
+    }
+
+    next();
+  }
+
+  private validateSessionId(sessionId: string): boolean {
+    // Basic session ID validation - should be cryptographically secure
+    return !!(sessionId && sessionId.length >= 32 && /^[a-zA-Z0-9]+$/.test(sessionId));
+  }
+
   private setupMiddleware() {
-    this.app.use(cors({
-      origin: '*',
-      credentials: true,
-      methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning']
-    }));
-    this.app.use(express.json({ limit: '2mb' }));
-    
-    // Add ngrok skip header for all responses
+    // Rate limiting middleware
+    const limiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 100 // limit each IP to 100 requests per windowMs
+    });
+    this.app.use(limiter);
+
+    // Authentication middleware
     this.app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+      return this.authenticateRequest(req, res, next);
+    });
+
+    // Security headers
+    this.app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('X-XSS-Protection', '1; mode=block');
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
       res.setHeader('ngrok-skip-browser-warning', 'true');
       next();
     });
+
+    // CORS configuration - remove wildcard for security
+    this.app.use(cors({
+      origin: [
+        'https://claude.ai',
+        'https://chat.claude.ai',
+        'https://console.claude.ai',
+        /^https:\/\/[a-zA-Z0-9-]+\.claude\.ai$/,
+        ...(process.env.NODE_ENV === 'development' ? ['http://localhost:3000', 'http://127.0.0.1:3000'] : [])
+      ],
+      credentials: true,
+      methods: ['GET', 'POST', 'OPTIONS'],
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-API-Key',
+        'X-Requested-With',
+        'Accept',
+        'Origin',
+        'x-claude-request-id',
+        'x-mcp-session-id'
+      ],
+      exposedHeaders: ['x-mcp-session-id']
+    }));
+
+    this.app.use(express.json({ limit: '2mb' }));
   }
 
   private setupRoutes() {
@@ -237,12 +325,15 @@ class MCPServer {
       res.send(`
         <h1>OnlineGDB MCP Server</h1>
         <p>C++ Code Execution MCP Server is running successfully!</p>
+        <h2>Authentication:</h2>
+        <p>This server requires authentication via <code>x-api-key</code> header.</p>
+        <p>API Key: <code>${this.validApiKey}</code></p>
         <h2>Available Endpoints:</h2>
         <ul>
           <li><strong>GET /</strong> - This page</li>
-          <li><strong>POST /mcp</strong> - MCP protocol endpoint</li>
-          <li><strong>GET /tools/list</strong> - List available tools</li>
-          <li><strong>GET /health</strong> - Health check</li>
+          <li><strong>POST /mcp</strong> - MCP protocol endpoint (requires auth)</li>
+          <li><strong>GET /tools/list</strong> - List available tools (requires auth)</li>
+          <li><strong>GET /health</strong> - Health check (no auth required)</li>
         </ul>
         <h2>Available Tools:</h2>
         <ul>
@@ -269,13 +360,38 @@ class MCPServer {
           return;
         }
 
+        // Validate and sanitize inputs
+        if (typeof method !== 'string' || method.length > 100) {
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: { code: -32602, message: "Invalid method" },
+            id: id || null
+          });
+          return;
+        }
+
+        // Check session ID if provided
+        const sessionId = req.headers['x-mcp-session-id'] as string;
+        if (sessionId && !this.validateSessionId(sessionId)) {
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: { code: -32602, message: "Invalid session ID" },
+            id: id || null
+          });
+          return;
+        }
+
         let result;
         
         switch (method) {
           case 'initialize':
             result = {
               protocolVersion: "2024-11-05",
-              capabilities: { tools: {} },
+              capabilities: { 
+                tools: {},
+                resources: {},
+                prompts: {}
+              },
               serverInfo: {
                 name: "onlinegdb-cpp-executor",
                 version: "1.0.0"
@@ -311,16 +427,24 @@ class MCPServer {
             return;
         }
         
-        res.json({
+        // Add session ID to response if provided
+        const responseHeaders: any = {};
+        if (sessionId) {
+          responseHeaders['x-mcp-session-id'] = sessionId;
+        }
+        
+        res.set(responseHeaders).json({
           jsonrpc: "2.0",
           result: result,
           id: id || null
         });
         
       } catch (err: any) {
+        // Don't leak sensitive information in error messages
+        const errorMessage = process.env.NODE_ENV === 'development' ? err.message : 'Internal server error';
         res.status(500).json({
           jsonrpc: "2.0",
-          error: { code: -32603, message: err.message || 'Internal server error' },
+          error: { code: -32603, message: errorMessage },
           id: req.body.id || null
         });
       }
