@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "onlinegdb-cpp-executor": {
+      "transport": {
+        "type": "http",
+        "url": "http://localhost:3000/mcp"
+      },
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "3000"
+      }
+    }
+  }
+}

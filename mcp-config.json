@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "onlinegdb-cpp-executor": {
+      "command": "node",
+      "args": ["/path/to/onlinegdb-mcp-server/dist/index.js"],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    }
+  },
+  "tools": [
+    {
+      "server": "onlinegdb-cpp-executor",
+      "name": "execute_cpp_code",
+      "description": "Execute C++ code with optional input using OnlineGDB compiler"
+    },
+    {
+      "server": "onlinegdb-cpp-executor", 
+      "name": "submit_solution",
+      "description": "Test a complete C++ solution against multiple test cases"
+    },
+    {
+      "server": "onlinegdb-cpp-executor",
+      "name": "optimize_code", 
+      "description": "Analyze C++ code for performance optimizations"
+    },
+    {
+      "server": "onlinegdb-cpp-executor",
+      "name": "generate_test_cases",
+      "description": "Generate comprehensive test cases for coding problems"
+    }
+  ]
+}
