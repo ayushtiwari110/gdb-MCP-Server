@@ -214,7 +214,7 @@ class MCPServer {
     this.app.use(express.json({ limit: '2mb' }));
     
     // Add ngrok skip header for all responses
-    this.app.use((req, res, next) => {
+    this.app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
       res.setHeader('ngrok-skip-browser-warning', 'true');
       next();
     });
@@ -600,7 +600,7 @@ class MCPServer {
         resolve();
       });
       
-      httpServer.on('error', (err) => {
+      httpServer.on('error', (err: Error) => {
         console.error(`❌ Failed to start server on port ${this.port}:`, err.message);
         reject(err);
       });
